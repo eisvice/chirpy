@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync/atomic"
 )
 
@@ -81,7 +82,7 @@ func validateChirpHandler(writer http.ResponseWriter, request *http.Request) {
 	}
 
 	type responseBody struct {
-		Valid bool `json:"valid"`
+		CleanedBody string `json:"cleaned_body"`
 	}
 
 	dat, err := io.ReadAll(request.Body)
@@ -103,7 +104,7 @@ func validateChirpHandler(writer http.ResponseWriter, request *http.Request) {
 	}
 
 	respondWithJSON(writer, 200, responseBody{
-		Valid: true,
+		CleanedBody: bodyCleaning(params.Body),
 	})
 }
 
@@ -121,4 +122,24 @@ func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) error
 
 func respondWithError(w http.ResponseWriter, code int, msg string) error {
 	return respondWithJSON(w, code, map[string]string{"error": msg})
+}
+
+func bodyCleaning(bodyText string) string {
+	profanes := []string{
+		"kerfuffle",
+		"sharbert",
+		"fornax",
+	}
+
+	bodySplit := strings.Split(bodyText, " ")
+
+	for i, split := range bodySplit {
+		for _, profane := range profanes {
+			if strings.ToLower(split) == profane {
+				bodySplit[i] = "****"
+			}
+		}
+	}
+
+	return strings.Join(bodySplit, " ")
 }
