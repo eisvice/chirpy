@@ -1,2 +1,3 @@
 out
 tests.http
+.env

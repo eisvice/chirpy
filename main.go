@@ -1,17 +1,26 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync/atomic"
+	"time"
+
+	"github.com/eisvice/chirpy/internal/database"
+	"github.com/google/uuid"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	database *database.Queries
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -21,17 +30,33 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	})
 }
 
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
+}
+
 const port = "8080"
 const filepathRoot = "."
 
 func main() {
-	apiCfg := apiConfig{fileserverHits: atomic.Int32{}}
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	apiCfg := apiConfig{fileserverHits: atomic.Int32{}, database: database.New(db)}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/healthz", healthHandler)
 	mux.HandleFunc("GET /admin/metrics", apiCfg.hitsHandler)
 	mux.HandleFunc("POST /admin/reset", apiCfg.resetHandler)
 	mux.HandleFunc("POST /api/validate_chirp", validateChirpHandler)
+	mux.HandleFunc("POST /api/users", apiCfg.newUserHandler)
 
 	fs := http.FileServer(http.Dir(filepathRoot))
 	handler := http.StripPrefix("/app", fs)
@@ -72,6 +97,40 @@ func (cfg *apiConfig) hitsHandler(writer http.ResponseWriter, request *http.Requ
 func (cfg *apiConfig) resetHandler(writer http.ResponseWriter, request *http.Request) {
 	writer.WriteHeader(http.StatusOK)
 	cfg.fileserverHits.Store(0)
+}
+
+func (cfg *apiConfig) newUserHandler(writer http.ResponseWriter, request *http.Request) {
+	defer request.Body.Close()
+
+	type requestBody struct {
+		Email string `json:"email"`
+	}
+
+	dat, err := io.ReadAll(request.Body)
+	if err != nil {
+		respondWithError(writer, 500, "couldn't read request!")
+		return
+	}
+
+	params := requestBody{}
+	err = json.Unmarshal(dat, &params)
+	if err != nil {
+		respondWithError(writer, 500, "couldn't unmarshal parameters")
+		return
+	}
+
+	user, err := cfg.database.CreateUser(request.Context(), params.Email)
+	if err != nil {
+		respondWithError(writer, 500, fmt.Sprintf("error while creating a user: %v", err))
+		return
+	}
+
+	respondWithJSON(writer, 201, &User{
+		ID: user.ID, 
+		CreatedAt: user.CreatedAt, 
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+	})
 }
 
 func validateChirpHandler(writer http.ResponseWriter, request *http.Request) {
