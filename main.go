@@ -37,6 +37,14 @@ type User struct {
 	Email     string    `json:"email"`
 }
 
+type Chirp struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserId	  uuid.NullUUID	`json:"user_id"`
+}
+
 const port = "8080"
 const filepathRoot = "."
 
@@ -55,8 +63,8 @@ func main() {
 	mux.HandleFunc("GET /api/healthz", healthHandler)
 	mux.HandleFunc("GET /admin/metrics", apiCfg.hitsHandler)
 	mux.HandleFunc("POST /admin/reset", apiCfg.resetHandler)
-	mux.HandleFunc("POST /api/validate_chirp", validateChirpHandler)
 	mux.HandleFunc("POST /api/users", apiCfg.newUserHandler)
+	mux.HandleFunc("POST /api/chirps", apiCfg.validateChirpHandler)
 
 	fs := http.FileServer(http.Dir(filepathRoot))
 	handler := http.StripPrefix("/app", fs)
@@ -133,15 +141,12 @@ func (cfg *apiConfig) newUserHandler(writer http.ResponseWriter, request *http.R
 	})
 }
 
-func validateChirpHandler(writer http.ResponseWriter, request *http.Request) {
+func (cfg *apiConfig) validateChirpHandler(writer http.ResponseWriter, request *http.Request) {
 	defer request.Body.Close()
 
 	type requestBody struct {
 		Body string `json:"body"`
-	}
-
-	type responseBody struct {
-		CleanedBody string `json:"cleaned_body"`
+		UserId uuid.NullUUID `json:"user_id"`
 	}
 
 	dat, err := io.ReadAll(request.Body)
@@ -162,9 +167,30 @@ func validateChirpHandler(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	respondWithJSON(writer, 200, responseBody{
-		CleanedBody: bodyCleaning(params.Body),
-	})
+	chirp, err := cfg.database.CreateChirp(
+		request.Context(), 
+		database.CreateChirpParams{
+			Body: params.Body,
+			UserID: params.UserId,
+		},
+	)
+
+	if err != nil {
+		respondWithError(writer, 500, fmt.Sprintf("error while creating a chirp: %v", err))
+		return
+	}
+
+	respondWithJSON(
+		writer,
+		201,
+		&Chirp{
+			ID: chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt, 
+			Body: chirp.Body, 
+			UserId: chirp.UserID,
+		},
+	)
 }
 
 func respondWithJSON(w http.ResponseWriter, code int, payload interface{}) error {
