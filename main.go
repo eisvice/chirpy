@@ -21,6 +21,7 @@ import (
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	database *database.Queries
+	platform string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -51,13 +52,14 @@ const filepathRoot = "."
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
+	platform := os.Getenv("PLATFORM")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
 
-	apiCfg := apiConfig{fileserverHits: atomic.Int32{}, database: database.New(db)}
+	apiCfg := apiConfig{fileserverHits: atomic.Int32{}, database: database.New(db), platform: platform}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/healthz", healthHandler)
@@ -65,6 +67,8 @@ func main() {
 	mux.HandleFunc("POST /admin/reset", apiCfg.resetHandler)
 	mux.HandleFunc("POST /api/users", apiCfg.newUserHandler)
 	mux.HandleFunc("POST /api/chirps", apiCfg.validateChirpHandler)
+	mux.HandleFunc("GET /api/chirps", apiCfg.listChirpsHandler)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpHandler)
 
 	fs := http.FileServer(http.Dir(filepathRoot))
 	handler := http.StripPrefix("/app", fs)
@@ -103,6 +107,15 @@ func (cfg *apiConfig) hitsHandler(writer http.ResponseWriter, request *http.Requ
 }
 
 func (cfg *apiConfig) resetHandler(writer http.ResponseWriter, request *http.Request) {
+	if cfg.platform != "DEV" {
+		writer.WriteHeader(http.StatusForbidden)
+		return
+	}
+
+	err := cfg.database.DeleteUsers(request.Context())
+	if err != nil {
+		log.Fatalf("couldn't delete users: %v", err)
+	}
 	writer.WriteHeader(http.StatusOK)
 	cfg.fileserverHits.Store(0)
 }
@@ -184,6 +197,53 @@ func (cfg *apiConfig) validateChirpHandler(writer http.ResponseWriter, request *
 		writer,
 		201,
 		&Chirp{
+			ID: chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt, 
+			Body: chirp.Body, 
+			UserId: chirp.UserID,
+		},
+	)
+}
+
+func (cfg *apiConfig) listChirpsHandler(writer http.ResponseWriter, request *http.Request) {
+	defer request.Body.Close()
+
+	chirps, err := cfg.database.ListChirps(request.Context())
+	if err != nil {
+		respondWithError(writer, 500, fmt.Sprintf("error while listing chirps: %v", err))
+		return
+	}
+
+	chirpsMap := make([]Chirp, len(chirps));
+	for i, chirp := range chirps {
+		chirpsMap[i] = Chirp{
+			ID: chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt, 
+			Body: chirp.Body, 
+			UserId: chirp.UserID,
+		}
+	}
+
+	respondWithJSON(writer, http.StatusOK, chirpsMap)
+}
+
+func (cfg *apiConfig) getChirpHandler(writer http.ResponseWriter, request *http.Request) {
+	defer request.Body.Close()
+
+	chirpUUID, err := uuid.Parse(request.PathValue("chirpID"))
+	if err != nil {
+		respondWithError(writer, http.StatusInternalServerError, fmt.Sprintf("invalid uuid: %v", err))
+	}
+
+	chirp, err := cfg.database.GetChirp(request.Context(), chirpUUID)
+	if err != nil {
+		respondWithError(writer, http.StatusNotFound, fmt.Sprintf("error while finding a chirp: %v", err))
+		return
+	}
+
+	respondWithJSON(writer, http.StatusOK, Chirp{
 			ID: chirp.ID,
 			CreatedAt: chirp.CreatedAt,
 			UpdatedAt: chirp.UpdatedAt, 
