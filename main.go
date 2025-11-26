@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/eisvice/chirpy/internal/auth"
 	"github.com/eisvice/chirpy/internal/database"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -66,6 +67,7 @@ func main() {
 	mux.HandleFunc("GET /admin/metrics", apiCfg.hitsHandler)
 	mux.HandleFunc("POST /admin/reset", apiCfg.resetHandler)
 	mux.HandleFunc("POST /api/users", apiCfg.newUserHandler)
+	mux.HandleFunc("POST /api/login", apiCfg.loginHandler)
 	mux.HandleFunc("POST /api/chirps", apiCfg.validateChirpHandler)
 	mux.HandleFunc("GET /api/chirps", apiCfg.listChirpsHandler)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpHandler)
@@ -125,6 +127,7 @@ func (cfg *apiConfig) newUserHandler(writer http.ResponseWriter, request *http.R
 
 	type requestBody struct {
 		Email string `json:"email"`
+		Password string `json:"password"`
 	}
 
 	dat, err := io.ReadAll(request.Body)
@@ -140,13 +143,61 @@ func (cfg *apiConfig) newUserHandler(writer http.ResponseWriter, request *http.R
 		return
 	}
 
-	user, err := cfg.database.CreateUser(request.Context(), params.Email)
+	hashedPassword, err := auth.HashPassword(params.Password)
+	if err != nil {
+		respondWithError(writer, 500, fmt.Sprintf("couldn't hash password. %v", err))
+	}
+
+	user, err := cfg.database.CreateUser(request.Context(), database.CreateUserParams{
+		Email: params.Email, 
+		HashedPassword: hashedPassword,
+	})
 	if err != nil {
 		respondWithError(writer, 500, fmt.Sprintf("error while creating a user: %v", err))
 		return
 	}
 
 	respondWithJSON(writer, 201, &User{
+		ID: user.ID, 
+		CreatedAt: user.CreatedAt, 
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+	})
+}
+
+func (cfg *apiConfig) loginHandler(writer http.ResponseWriter, request *http.Request) {
+	defer request.Body.Close()
+
+	type requestBody struct {
+		Email string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	dat, err := io.ReadAll(request.Body)
+	if err != nil {
+		respondWithError(writer, http.StatusInternalServerError, "couldn't read request!")
+		return
+	}
+
+	params := requestBody{}
+	err = json.Unmarshal(dat, &params)
+	if err != nil {
+		respondWithError(writer, http.StatusInternalServerError, "couldn't unmarshal parameters")
+		return
+	}
+
+	user, err := cfg.database.FindByEmail(request.Context(), params.Email)
+	if err != nil {
+		respondWithError(writer, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+
+	if match, err := auth.CheckPasswordHash(params.Password, user.HashedPassword); err != nil || !match {
+		respondWithError(writer, http.StatusUnauthorized, "Unauthorized")
+		return
+	}
+	
+	respondWithJSON(writer, http.StatusOK, &User{
 		ID: user.ID, 
 		CreatedAt: user.CreatedAt, 
 		UpdatedAt: user.UpdatedAt,
