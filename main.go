@@ -23,6 +23,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	database *database.Queries
 	platform string
+	secret string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -37,6 +38,8 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+	Token 	  string	`json:"token"`
+	RefreshToken string	`json:"refresh_token"`
 }
 
 type Chirp struct {
@@ -54,13 +57,14 @@ func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
 	platform := os.Getenv("PLATFORM")
+	secret := os.Getenv("SECRET_KEY")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer db.Close()
 
-	apiCfg := apiConfig{fileserverHits: atomic.Int32{}, database: database.New(db), platform: platform}
+	apiCfg := apiConfig{fileserverHits: atomic.Int32{}, database: database.New(db), platform: platform, secret: secret}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/healthz", healthHandler)
@@ -68,6 +72,8 @@ func main() {
 	mux.HandleFunc("POST /admin/reset", apiCfg.resetHandler)
 	mux.HandleFunc("POST /api/users", apiCfg.newUserHandler)
 	mux.HandleFunc("POST /api/login", apiCfg.loginHandler)
+	mux.HandleFunc("POST /api/refresh", apiCfg.refreshAccessToken)
+	mux.HandleFunc("POST /api/revoke", apiCfg.revokeRefreshToken)
 	mux.HandleFunc("POST /api/chirps", apiCfg.validateChirpHandler)
 	mux.HandleFunc("GET /api/chirps", apiCfg.listChirpsHandler)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpHandler)
@@ -146,6 +152,7 @@ func (cfg *apiConfig) newUserHandler(writer http.ResponseWriter, request *http.R
 	hashedPassword, err := auth.HashPassword(params.Password)
 	if err != nil {
 		respondWithError(writer, 500, fmt.Sprintf("couldn't hash password. %v", err))
+		return
 	}
 
 	user, err := cfg.database.CreateUser(request.Context(), database.CreateUserParams{
@@ -196,12 +203,39 @@ func (cfg *apiConfig) loginHandler(writer http.ResponseWriter, request *http.Req
 		respondWithError(writer, http.StatusUnauthorized, "Unauthorized")
 		return
 	}
+
+	token, err := auth.MakeJWT(user.ID, cfg.secret)
+	if err != nil {
+		respondWithError(writer, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	refreshToken, err := auth.MakeRefreshToken()
+	if err != nil {
+		respondWithError(writer, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Write token to the DB. IMPORTANT: 60 days are set in the SQL query!
+	_, err = cfg.database.CreateToken(
+		request.Context(), 
+		database.CreateTokenParams{
+			UserID: uuid.NullUUID{UUID: user.ID, Valid: true},
+			Token: refreshToken,
+		},
+	)	
+	if err != nil {
+		respondWithError(writer, http.StatusInternalServerError, err.Error())
+		return
+	}
 	
 	respondWithJSON(writer, http.StatusOK, &User{
 		ID: user.ID, 
 		CreatedAt: user.CreatedAt, 
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
+		Token: token,
+		RefreshToken: refreshToken,
 	})
 }
 
@@ -210,24 +244,35 @@ func (cfg *apiConfig) validateChirpHandler(writer http.ResponseWriter, request *
 
 	type requestBody struct {
 		Body string `json:"body"`
-		UserId uuid.NullUUID `json:"user_id"`
 	}
 
 	dat, err := io.ReadAll(request.Body)
 	if err != nil {
-		respondWithError(writer, 500, "couldn't read request!")
+		respondWithError(writer, http.StatusInternalServerError, "couldn't read request!")
+		return
+	}
+
+	token, err := auth.GetBearerToken(request.Header)
+	if err != nil {
+		respondWithError(writer, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, cfg.secret)
+	if err != nil {
+		respondWithError(writer, http.StatusUnauthorized, err.Error())
 		return
 	}
 
 	params := requestBody{}
 	err = json.Unmarshal(dat, &params)
 	if err != nil {
-		respondWithError(writer, 500, "couldn't unmarshal parameters")
+		respondWithError(writer, http.StatusInternalServerError, "couldn't unmarshal parameters")
 		return
 	}
 
 	if len(params.Body) > 140 {
-		respondWithError(writer, 400, "Chirp is too long")
+		respondWithError(writer, http.StatusBadRequest, "Chirp is too long")
 		return
 	}
 
@@ -235,7 +280,7 @@ func (cfg *apiConfig) validateChirpHandler(writer http.ResponseWriter, request *
 		request.Context(), 
 		database.CreateChirpParams{
 			Body: params.Body,
-			UserID: params.UserId,
+			UserID: uuid.NullUUID{UUID: userID, Valid: true},
 		},
 	)
 
@@ -255,6 +300,56 @@ func (cfg *apiConfig) validateChirpHandler(writer http.ResponseWriter, request *
 			UserId: chirp.UserID,
 		},
 	)
+}
+
+func (cfg *apiConfig) refreshAccessToken(writer http.ResponseWriter, request *http.Request) {
+	refreshToken, err := auth.GetBearerToken(request.Header)
+	if err != nil {
+		respondWithError(writer, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	_, err = cfg.database.FindByParams(
+		request.Context(),
+		refreshToken,
+	)
+	if err != nil {
+		respondWithError(writer, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	user, err := cfg.database.GetUserFromRefreshToken(request.Context(), refreshToken)		
+	if err != nil {
+		respondWithError(writer, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	accessToken, err := auth.MakeJWT(user.ID, cfg.secret)
+	if err != nil {
+		respondWithError(writer, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	respondWithJSON(writer, http.StatusOK, &User{
+		Token: accessToken,
+	})
+}
+
+
+func (cfg *apiConfig) revokeRefreshToken(writer http.ResponseWriter, request *http.Request) {
+	refreshToken, err := auth.GetBearerToken(request.Header)
+	if err != nil {
+		respondWithError(writer, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	err = cfg.database.RevokeToken(request.Context(), refreshToken)
+	if err != nil {
+		respondWithError(writer, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	respondWithJSON(writer, http.StatusNoContent, nil)
 }
 
 func (cfg *apiConfig) listChirpsHandler(writer http.ResponseWriter, request *http.Request) {
@@ -286,6 +381,7 @@ func (cfg *apiConfig) getChirpHandler(writer http.ResponseWriter, request *http.
 	chirpUUID, err := uuid.Parse(request.PathValue("chirpID"))
 	if err != nil {
 		respondWithError(writer, http.StatusInternalServerError, fmt.Sprintf("invalid uuid: %v", err))
+		return
 	}
 
 	chirp, err := cfg.database.GetChirp(request.Context(), chirpUUID)

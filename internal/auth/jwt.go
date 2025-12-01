@@ -2,13 +2,16 @@ package auth
 
 import (
 	"errors"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 )
 
-func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (string, error) {
+func MakeJWT(userID uuid.UUID, tokenSecret string) (string, error) {
+    expiresIn := time.Hour
 	t := jwt.NewWithClaims(jwt.SigningMethodHS256, 
 		jwt.RegisteredClaims{
 			Issuer: "chirpy",
@@ -45,4 +48,17 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
     }
 
     return userID, nil
+}
+
+func GetBearerToken(headers http.Header) (string, error) {
+    bearer := headers.Get("Authorization")
+    bearer, found := strings.CutPrefix(bearer, "Bearer ")
+    if bearer == "" {
+        return "", errors.New("JWT not found")
+    }
+    if !found {
+        return "", errors.New("wrong JWT prefix")
+    }
+
+    return bearer, nil
 }

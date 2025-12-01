@@ -11,3 +11,8 @@ DELETE FROM users;
 -- name: FindByEmail :one
 SELECT * FROM users
 WHERE email = $1;
+
+-- name: GetUserFromRefreshToken :one
+SELECT users.* FROM users
+JOIN refresh_tokens ON refresh_tokens.user_id = users.id
+WHERE refresh_tokens.token = $1;
