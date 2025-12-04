@@ -7,6 +7,7 @@ RETURNING *;
 
 -- name: ListChirps :many
 SELECT * FROM chirps
+WHERE $1 = '00000000-0000-0000-0000-000000000000' OR user_id = $1
 ORDER BY created_at;
 
 -- name: GetChirp :one

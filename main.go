@@ -434,7 +434,16 @@ func (cfg *apiConfig) revokeRefreshToken(writer http.ResponseWriter, request *ht
 func (cfg *apiConfig) listChirpsHandler(writer http.ResponseWriter, request *http.Request) {
 	defer request.Body.Close()
 
-	chirps, err := cfg.database.ListChirps(request.Context())
+	authorID := request.URL.Query().Get("author_id")
+
+	var authorNullUUID uuid.NullUUID
+	if authorID != "" {
+		if authorUUID, err := uuid.Parse(authorID); err == nil {
+			authorNullUUID = uuid.NullUUID{UUID: authorUUID, Valid: true}
+		}
+	}
+
+	chirps, err := cfg.database.ListChirps(request.Context(), authorNullUUID)
 	if err != nil {
 		respondWithError(writer, 500, fmt.Sprintf("error while listing chirps: %v", err))
 		return
