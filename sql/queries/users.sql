@@ -16,3 +16,15 @@ WHERE email = $1;
 SELECT users.* FROM users
 JOIN refresh_tokens ON refresh_tokens.user_id = users.id
 WHERE refresh_tokens.token = $1;
+
+-- name: UpdateUser :one
+UPDATE users 
+SET email = $2, hashed_password = $3
+WHERE id = $1
+RETURNING *;
+
+-- name: UpgradeToChirpyRed :one
+UPDATE users
+SET is_chirpy_red = TRUE 
+WHERE id = $1
+RETURNING *;
