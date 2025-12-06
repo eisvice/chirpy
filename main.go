@@ -438,13 +438,6 @@ func (cfg *apiConfig) listChirpsHandler(writer http.ResponseWriter, request *htt
 	authorID := request.URL.Query().Get("author_id")
 	order := request.URL.Query().Get("sort")
 
-	// var authorNullUUID uuid.NullUUID
-	// if authorID != "" {
-	// 	if authorUUID, err := uuid.Parse(authorID); err == nil {
-	// 		authorNullUUID = uuid.NullUUID{UUID: authorUUID, Valid: true}
-	// 	}
-	// }
-
 	chirps, err := cfg.database.ListChirps(request.Context(), authorID)
 	if err != nil {
 		respondWithError(writer, 500, fmt.Sprintf("error while listing chirps: %v", err))
@@ -462,11 +455,6 @@ func (cfg *apiConfig) listChirpsHandler(writer http.ResponseWriter, request *htt
 		}
 	}
 
-	log.Println(order)
-	log.Println(chirpsMap)
-	log.Println(authorID)
-	// log.Println(authorNullUUID)
-	log.Println(chirps)
 	if order == "desc" {
 		sort.Slice(chirpsMap, func(i, j int) bool {return chirpsMap[i].CreatedAt.After(chirpsMap[j].CreatedAt)})
 	}
