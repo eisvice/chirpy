@@ -7,7 +7,7 @@ RETURNING *;
 
 -- name: ListChirps :many
 SELECT * FROM chirps
-WHERE $1::TEXT = '' OR user_id::TEXT = $1::TEXT
+WHERE $1::uuid = uuid_nil() OR user_id = $1::uuid
 ORDER BY created_at;
 
 -- name: GetChirp :one

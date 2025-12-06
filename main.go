@@ -438,7 +438,16 @@ func (cfg *apiConfig) listChirpsHandler(writer http.ResponseWriter, request *htt
 	authorID := request.URL.Query().Get("author_id")
 	order := request.URL.Query().Get("sort")
 
-	chirps, err := cfg.database.ListChirps(request.Context(), authorID)
+	authorUUID := uuid.UUID{}
+	if authorID != "" {
+		if aUUID, err := uuid.Parse(authorID); err != nil {
+			authorUUID, _ = uuid.NewRandom()
+		} else {
+			authorUUID = aUUID
+		}
+	}
+
+	chirps, err := cfg.database.ListChirps(request.Context(), authorUUID)
 	if err != nil {
 		respondWithError(writer, 500, fmt.Sprintf("error while listing chirps: %v", err))
 		return
