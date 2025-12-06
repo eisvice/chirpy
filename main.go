@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -435,15 +436,16 @@ func (cfg *apiConfig) listChirpsHandler(writer http.ResponseWriter, request *htt
 	defer request.Body.Close()
 
 	authorID := request.URL.Query().Get("author_id")
+	order := request.URL.Query().Get("sort")
 
-	var authorNullUUID uuid.NullUUID
-	if authorID != "" {
-		if authorUUID, err := uuid.Parse(authorID); err == nil {
-			authorNullUUID = uuid.NullUUID{UUID: authorUUID, Valid: true}
-		}
-	}
+	// var authorNullUUID uuid.NullUUID
+	// if authorID != "" {
+	// 	if authorUUID, err := uuid.Parse(authorID); err == nil {
+	// 		authorNullUUID = uuid.NullUUID{UUID: authorUUID, Valid: true}
+	// 	}
+	// }
 
-	chirps, err := cfg.database.ListChirps(request.Context(), authorNullUUID)
+	chirps, err := cfg.database.ListChirps(request.Context(), authorID)
 	if err != nil {
 		respondWithError(writer, 500, fmt.Sprintf("error while listing chirps: %v", err))
 		return
@@ -458,6 +460,15 @@ func (cfg *apiConfig) listChirpsHandler(writer http.ResponseWriter, request *htt
 			Body: chirp.Body, 
 			UserId: chirp.UserID,
 		}
+	}
+
+	log.Println(order)
+	log.Println(chirpsMap)
+	log.Println(authorID)
+	// log.Println(authorNullUUID)
+	log.Println(chirps)
+	if order == "desc" {
+		sort.Slice(chirpsMap, func(i, j int) bool {return chirpsMap[i].CreatedAt.After(chirpsMap[j].CreatedAt)})
 	}
 
 	respondWithJSON(writer, http.StatusOK, chirpsMap)
